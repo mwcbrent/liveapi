@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 
 import pprint
 import base64,cookielib,hmac,hashlib,json,time,urllib,urllib2,uuid,webbrowser
@@ -6,7 +7,7 @@ API_PATH       = 'https://apis.live.net/v5.0/'
 AUTH_URL       = 'https://login.live.com/oauth20_authorize.srf?%s'
 TOKEN_URL      = 'https://login.live.com/oauth20_token.srf'
 
-from liveobject import LiveObject, LiveFile, LiveFolder, LiveAlbum, LiveCalendar, LiveEvent
+import liveobject
 
 class LiveAPIError(Exception):
     pass
@@ -95,11 +96,12 @@ class LiveToken(object):
 
 class LiveConnection(object):
 
-    OBJ_MAP = { 'file'      : LiveFile,
-                'folder'    : LiveFolder,
-                'album'     : LiveAlbum,
-                'calendar'  : LiveCalendar,
-                'event'     : LiveEvent
+    OBJ_MAP = { 'file'      : liveobject.LiveFile,
+                'notebook'  : liveobject.LiveNotebook,
+                'folder'    : liveobject.LiveFolder,
+                'album'     : liveobject.LiveAlbum,
+                'calendar'  : liveobject.LiveCalendar,
+                'event'     : liveobject.LiveEvent,
               }
 
     def __init__(self,client_id,client_secret,redirect_uri,debug=False):
@@ -147,22 +149,29 @@ class LiveConnection(object):
         else:
             raise LiveAPIError, "No refresh_token available"
 
-    def get(self,path,params=None):
+    def request(self,path,params=None,data=None,headers=None,method='GET'):
         if self.token.expired():
             self.refresh_token()
         if params:
             params['access_token'] = self.token.access_token
         else:
             params = { 'access_token' : self.token.access_token }
-        return self.opener.open("%s%s?%s" % (API_PATH,path,urllib.urlencode(params)))
+        url = str("%s%s?%s" % (API_PATH,path.lstrip('/'),urllib.urlencode(params)))
+        r = urllib2.Request(url,data)
+        if headers:
+            for k,v in headers.items():
+                r.add_header(k,v)
+        if method:
+            r.get_method = lambda : method
+        return self.opener.open(r)
 
-    def get_json(self,path,params=None):
-        return json.loads(self.get(path,params).read())
+    def get_json(self,path,params=None,data=None,headers=None,method='GET'):
+        return json.loads(self.request(path,params,data,headers,method).read())
 
     def get_object(self,id,obj_type=None):
         response = self.get_json(id)
         obj_type = obj_type or response.get('type') or response['id'].split('.')[0]
-        obj_class = self.OBJ_MAP.get(obj_type,LiveObject)
+        obj_class = self.OBJ_MAP.get(obj_type,liveobject.LiveObject)
         return obj_class(self,response)
 
     def get_container(self,path):
@@ -170,7 +179,7 @@ class LiveConnection(object):
         try:
             for item in self.get_json(path)['data']:
                 obj_type = item.get('type') or item['id'].split('.')[0]
-                obj_class = self.OBJ_MAP.get(obj_type,LiveObject)
+                obj_class = self.OBJ_MAP.get(obj_type,liveobject.LiveObject)
                 response.append(obj_class(self,item))
             return response
         except KeyError, e:
@@ -178,6 +187,7 @@ class LiveConnection(object):
 
 if __name__ == '__main__':
 
+    import os.path
     from ConfigParser import ConfigParser
 
     ini = ConfigParser()
@@ -186,13 +196,23 @@ if __name__ == '__main__':
     CLIENT_ID     = ini.get('liveapi','client_id')
     CLIENT_SECRET = ini.get('liveapi','client_secret')
     REDIRECT_URI  = ini.get('liveapi','redirect_uri')
-    SCOPE         = [ 'wl.signin', 'wl.basic', 'wl.skydrive', 'wl.offline_access', 'wl.calendars' ]
+    SCOPE         = [ 'wl.signin', 'wl.basic', 'wl.skydrive', 'wl.skydrive_update',
+                      'wl.offline_access', 'wl.calendars' ]
 
     from authcb import AuthCallback
 
     l = LiveConnection(CLIENT_ID,CLIENT_SECRET,REDIRECT_URI)
-    state = l.request_auth(SCOPE)
-    cb = AuthCallback(state)
-    auth_code = cb.poll()
-    l.get_token(auth_code)
+    try:
+        l.token = LiveToken.load(json.load(open(os.path.expanduser("~/.live-token"))))
+    except (IOError,KeyError,ValueError):
+        state = l.request_auth(SCOPE)
+        cb = AuthCallback(state)
+        auth_code = cb.poll()
+        l.get_token(auth_code)
+        json.dump(l.token.dump(),open(os.path.expanduser("~/.live-token"),"w"))
+    root = l.get_object('/me/skydrive')
+
+    x = open("/Users/paulc/Desktop/SAM_0312.jpg").read()
+    f = root.upload("hash.jpg",x)
+
 
